@@ -1,0 +1,321 @@
+import fitz  # PyMuPDF
+from flask import Flask, request, render_template_string, send_from_directory, session
+from flask_socketio import SocketIO, emit, join_room
+from datetime import datetime
+import openai
+import os
+import random
+import re
+import requests
+import time
+import urllib.parse
+import uuid
+from threading import Thread
+from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
+import asyncio
+from playwright.async_api import async_playwright
+import logging
+
+app = Flask(__name__)
+app.secret_key = 'your_secret_key'
+socketio = SocketIO(app)
+
+os.makedirs('downloads', exist_ok=True)
+os.makedirs('logs', exist_ok=True)
+
+logging.basicConfig(filename='logs/scraping_log.txt', level=logging.INFO,
+                    format='%(asctime)s: %(levelname)s: %(message)s')
+
+TEMPLATE = '''
+<!doctype html>
+<html>
+<head>
+    <title>学术搜索助手:帮助科研工作者快速获取所需信息</title>
+</head>
+<style>
+  .red-underline {
+    text-decoration: underline;
+    text-decoration-color: red;
+    text-decoration-thickness: 2px;
+  }
+</style>
+<body>
+    <h1>学术搜索助手from Taolab 1.0 @YNU 6/26/2024更新</h1>
+    <p>这个工具旨在帮助科研工作者从Google搜索结果中快速提取所需的信息。</p>
+    <p>先根据你提供的关键词进行谷歌搜索，接着deepseek AI根据你的科学问题有目的总结头10个谷歌检索的页面内容。</p>
+    <p>这个工具是private invited, 别外传，使用的是deepseek api，有成本，一篇文献一分钱，少量人使用可以承受。</p>
+    <h2>How to Use:</h2>
+    <ol>
+        <li>在下面的search query输入框中输入您的搜索查询。<span class="red-underline">搜索框用英文。</span></li>
+        <li>在下面的question输入框中输入您的问题。<span class="red-underline">问题可以是英文，也可以是中文。deepseek适合初筛，所以提问非常讲究。</span></li>
+        <li><span class="red-underline">问是否包含你需要的信息，不建议问具体问题，例如“是否包含影响lentivrius包装效率的信息?” 初筛找到相关文献后具体问题问claude。</span></li>
+        <li>点击"搜索和抓取"按钮。</li>
+        <li><span class="red-underline">抓取开始后，页面刚开始没有动静，喝杯咖啡，耐心等待，结果会逐个跳出来。有些网站难以抓取，需要等待更长时间。超过5分钟没有任何结果跳出来，请更换检索的关键词。</span></li>
+        <li>结果就绪后将显示在下方。不要同时进行多个搜索，结果会串。单次检索最终会显示10-20条结果。抓取完成，会在网页末尾显示“Deepseek results are complete.”</li>
+    </ol>
+    <form action="/" method="post">
+        <input type="text" name="query" placeholder="Enter search query" style="width: 600px;"  required autocomplete="off" />
+        <input type="text" name="question" placeholder="Enter your question" style="width: 600px;"  required autocomplete="off" />
+        <button type="submit">Search and Scrape</button>
+    </form>
+    <br>
+    <div id="message">{{ message }}</div>
+    <div id="results"></div>
+    <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
+<script>
+    var socket = io();
+    var room = '{{ room }}';
+
+    socket.on('connect', function() {
+        console.log('Connected to server');
+        socket.emit('join', {room: room});
+    });
+    socket.on('new_result', function(data) {
+        const newElement = document.createElement("div");
+        newElement.innerHTML = data;
+        document.getElementById('results').appendChild(newElement);
+    });
+    socket.on('completion', function(data) {
+        const completionElement = document.createElement("div");
+        completionElement.innerHTML = `<h3>${data}</h3>`;
+        document.getElementById('results').appendChild(completionElement);
+    });
+</script>
+</body>
+</html>
+'''
+
+links_dict = {}
+
+def get_google_search_links(search_url, retries=2, wait_time=2):
+    for attempt in range(retries):
+        try:
+            response = requests.get(search_url)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            links = set()
+            for a_tag in soup.select('a'):
+                href = a_tag.get('href')
+                if href and '/url?q=' in href:
+                    link = href.split('/url?q=')[1].split('&')[0]
+                    if not any(ignored in link for ignored in ['maps.google', 'support.google', 'accounts.google', 'youtube.com']):
+                        try:
+                            parsed = urllib.parse.urlparse(link)
+                            if all([parsed.scheme, parsed.netloc, parsed.path]):
+                                links.add(link)
+                        except ValueError:
+                            continue
+            return list(links)
+        except requests.exceptions.HTTPError as http_err:
+            logging.error(f'HTTP error occurred: {http_err}')
+            if attempt < retries - 1:
+                time.sleep(wait_time)
+            else:
+                return []
+        except Exception as err:
+            logging.error(f'Other error occurred: {err}')
+            return []
+    return []
+
+async def robust_goto(page, url, max_attempts=2):
+    attempt = 0
+    while attempt < max_attempts:
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=90000)
+            try:
+                await page.wait_for_load_state('load', timeout=10000)
+            except Exception:
+                logging.warning(f"Full page load timed out for {url}, proceeding with partial content")
+            
+            content = await page.content()
+            
+            if "Verify you are human by completing the action below" not in content and "Performance & security by Cloudflare" not in content:
+                return True
+            
+            logging.warning(f"Page contains Cloudflare content, retrying after 5 seconds for {url}")
+            await asyncio.sleep(10)
+            attempt += 1
+        except Exception as e:
+            logging.error(f"Attempt {attempt + 1} failed for {url}: {str(e)}")
+            attempt += 1
+            await asyncio.sleep(10)
+    return False
+
+async def extract_and_save_text(url, browser, index, directory, question, room):
+    logging.info(f"Starting extraction for {url}")
+    start_time = time.time()
+    page = None
+    context = None
+    try:
+        user_agent = UserAgent().random
+        viewport = {'width': random.randint(800, 1920), 'height': random.randint(600, 1080)}
+        context = await browser.new_context(user_agent=user_agent, viewport=viewport)
+        page = await context.new_page()
+        
+        try:
+            head_response = requests.head(url)
+            content_type = head_response.headers.get('Content-Type', '').lower()
+        except KeyError:
+            logging.warning(f"Content-Type header not found for {url}. Assuming HTML.")
+            content_type = 'html'
+        
+        if 'html' in content_type:
+            if await robust_goto(page, url):
+                try:
+                    content = await page.content()
+                    soup = BeautifulSoup(content, 'html.parser')
+                    body_text = soup.find('body')
+                    if body_text:
+                        readable_text = body_text.get_text(separator='\n', strip=True)
+                        if readable_text:
+                            filename = f"{directory}/scraped_text_{index}.txt"
+                            with open(filename, 'w', encoding='utf-8') as file:
+                                file.write(readable_text)
+                            logging.info(f"Saved readable text from {url} to {filename}")
+                            links_dict[filename] = url
+                            await query_deepseek(filename, question, room)
+                        else:
+                            logging.info(f"No suitable text to save for {url}")
+                except Exception as e:
+                    logging.error(f"Error scraping {url}: {str(e)}")
+            else:
+                logging.error(f"Failed to navigate to {url} after multiple attempts")
+        elif 'pdf' in content_type:
+            try:
+                response = requests.get(url)
+                pdf_path = f"{directory}/temp_{index}.pdf"
+                with open(pdf_path, 'wb') as f:
+                    f.write(response.content)
+                doc = fitz.open(pdf_path)
+                text = ''
+                for page in doc:
+                    text += page.get_text()
+                if text:
+                    filename = f"{directory}/scraped_text_{index}.txt"
+                    with open(filename, 'w', encoding='utf-8') as file:
+                        file.write(text)
+                    logging.info(f"Saved readable text from PDF {url} to {filename}")
+                    links_dict[filename] = url
+                    await query_deepseek(filename, question, room)
+                else:
+                    logging.info(f"No suitable text to save for {url}")
+            except Exception as e:
+                logging.error(f"Error extracting text from PDF {url}: {str(e)}")
+        else:
+            logging.warning(f"Unsupported content type {content_type} at {url}")
+    except Exception as e:
+        logging.error(f"Error creating context or navigating to {url}: {str(e)}")
+    finally:
+        if page and hasattr(page, 'close'):
+            await page.close()
+        if context:
+            await context.close()
+        end_time = time.time()
+        logging.info(f"Extraction for {url} completed in {end_time - start_time} seconds")
+
+async def query_deepseek(file_path, question, room):
+    openai.api_key = "YOUR DEEPSEEK API"
+    openai.api_base = "https://api.deepseek.com"
+    
+    chunk_size = 72000
+    max_chunks = 10
+    output_file = os.path.join(os.path.dirname(file_path), "deepseek_output.txt")
+    with open(output_file, 'a', encoding='utf-8') as outfile:
+        with open(file_path, 'r', encoding='utf-8') as infile:
+            context = infile.read()
+            
+            context_length = len(context)
+            chunk_responses = []
+            
+            for i in range(0, min(context_length, chunk_size * max_chunks), chunk_size):
+                chunk = context[i:i+chunk_size]
+                response = openai.ChatCompletion.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": f"Please answer the question based on the context information provided below:\n{chunk}\n. Do not use any information or knowledge beyond what is included in this context."},
+                        {"role": "user", "content": question},
+                    ],
+                    temperature=0.7,
+                    stream=False
+                )
+                
+                answer = response.choices[0].message.content
+                chunk_responses.append(answer)
+            
+            combined_response = " ".join(chunk_responses)
+            google_link = links_dict.get(file_path, "N/A")
+            
+            outfile.write(f"Input: {os.path.basename(file_path)}\n")
+            outfile.write(f"Google Link: {google_link}\n")
+            outfile.write(f"Output: {combined_response}\n\n")
+            message = f"<h2>Result for {os.path.basename(file_path)}</h2><p>Google Link: <a href='{google_link}'>{google_link}</a></p><p>{combined_response}</p>"
+            socketio.emit('new_result', message, room=room)
+            logging.info(f"Emitted result for {file_path} via WebSocket")
+
+async def run_playwright_task(links, directory, question, room):
+    start_time = time.time()
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        tasks = [extract_and_save_text(link, browser, index, directory, question, room) for index, link in enumerate(links)]
+        await asyncio.gather(*tasks)
+        await browser.close()
+    end_time = time.time()
+    logging.info(f"Playwright tasks completed in {end_time - start_time} seconds")
+    
+    # Emit completion message
+    socketio.emit('completion', f"Deepseek results are complete.", room=room)
+
+def scrape_task(query, question, query_dir, room):
+    search_urls = [
+        f"https://www.google.com/search?q={query}&start={start}"
+        for start in [1,10]
+    ]
+    links = set()
+    for search_url in search_urls:
+        links.update(get_google_search_links(search_url))
+    
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(run_playwright_task(list(links), query_dir, question, room))
+    except Exception as e:
+        logging.error(f"Error during search and scrape: {str(e)}")
+
+@app.route('/', methods=['GET', 'POST'])
+def search_and_scrape():
+    if request.method == 'POST':
+        query = request.form.get('query')
+        question = request.form.get('question')
+        
+        if not query or not question:
+            return render_template_string(TEMPLATE, message="Please provide both 'query' and 'question' fields in the form."), 400
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        query_safe = re.sub(r'[^\w\s]', '', query).replace(' ', '_')
+        query_dir = os.path.join('downloads', f"{query_safe}_{timestamp}")
+        os.makedirs(query_dir, exist_ok=True)
+        
+        room = str(uuid.uuid4())
+        session['room'] = room
+        
+        thread = Thread(target=scrape_task, args=(query, question, query_dir, room))
+        thread.start()
+        
+        return render_template_string(TEMPLATE, message="抓取开始，页面刚开始没有动静，喝杯咖啡，耐心等待，结果会逐个跳出来。有些网站难以抓取，需要等待更长时间。超过5分钟没有任何结果跳出来，请更换检索的关键词。抓取完成，会在网页末尾显示Deepseek results are complete.", room=room)
+        
+    room = session.get('room', '')
+    return render_template_string(TEMPLATE, message="", room=room)
+
+@app.route('/download/<path:filename>')
+def download_file(filename):
+    return send_from_directory('downloads', filename)
+
+@socketio.on('join')
+def handle_join(data):
+    room = data['room']
+    join_room(room)
+    emit('message', f'Joined room: {room}')
+
+if __name__ == "__main__":
+    socketio.run(app, debug=True, port=5000)
