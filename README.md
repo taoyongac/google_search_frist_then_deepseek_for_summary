@@ -6,7 +6,7 @@
 
 * 根据您提供的关键词进行谷歌学术搜索
 * DeepSeek AI根据您的科学问题有目的地总结排名前20的检索结果页面内容
-* 使用DeepSeek API,成本为每篇文献一分钱人民币,使用前需填入自己的DeepSeek API
+* 使用DeepSeek API,成本为每篇文献平均一分钱人民币,使用前需填入自己的DeepSeek API
 
 ## 使用方法
 
@@ -64,7 +64,7 @@ Features
 
 Perform Google Scholar searches based on your provided keywords
 DeepSeek AI purposefully summarizes the content of the top 20 search result pages according to your scientific question
-Uses DeepSeek API, with a cost of one cent (RMB) per paper, please enter your own DeepSeek API before use
+Uses DeepSeek API, with a cost of one cent (RMB) per paper on average, please enter your own DeepSeek API before use
 
 How to Use
 
