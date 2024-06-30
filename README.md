@@ -104,9 +104,9 @@ After finding relevant papers in the initial screening, you can use Claude to an
 
 15.Please do not perform multiple searches at the same time to avoid confusion of results
 
-15.A single search will eventually display 10-20 results
+16.A single search will eventually display 10-20 results
 
-16.When the crawling is completed, "Deepseek results are complete." will be displayed at the end of the webpage
+17.When the crawling is completed, "Deepseek results are complete." will be displayed at the end of the webpage
 
 
 
