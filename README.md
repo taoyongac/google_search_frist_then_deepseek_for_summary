@@ -4,9 +4,13 @@
 
 ## 功能特点
 
-* 根据您提供的关键词进行谷歌学术搜索
-* DeepSeek AI根据您的科学问题有目的地总结排名前20的检索结果页面内容
-* 使用DeepSeek API,成本为每篇文献平均一分钱人民币,使用前需填入自己的DeepSeek API
+当你提供感兴趣的问题和相关搜索关键词后,该工具会利用这些关键词在Google上进行搜索。
+
+接着,Deepseek AI会逐篇阅读Google检索出的头20个网页（文献）,根据你的问题判断每篇文献是否包含相关信息,最终为你输出一份潜在相关文献的列表。
+
+简而言之,它就像一个"私人文献助理",通过自动阅读初筛,帮你节省大量筛选文献的时间和精力,让你可以将注意力集中在阅读最相关的文献上。
+
+不断优化你的关键词，得到的结果会越来越精确地帮你找到你需要的信息。
 
 ## 使用方法
 
@@ -62,9 +66,13 @@ Academic Search Assistant
 Welcome to the Academic Search Assistant! This tool is designed to help researchers quickly extract desired information from Google search results.
 Features
 
-Perform Google Scholar searches based on your provided keywords
-DeepSeek AI purposefully summarizes the content of the top 20 search result pages according to your scientific question
-Uses DeepSeek API, with a cost of one cent (RMB) per paper on average, please enter your own DeepSeek API before use
+When you provide a question of interest and related search keywords, the tool uses these keywords to perform a search on Google.
+
+Then, Deepseek AI reads through the top 20 webpages (literature) retrieved by Google one by one, determining whether each piece of literature contains relevant information based on your question, and ultimately outputs a list of potentially relevant literature for you.
+
+In short, it acts like a "personal literature assistant" that saves you a significant amount of time and effort in screening literature by automatically reading and pre-screening, allowing you to focus your attention on reading the most relevant literature.
+
+By continuously optimizing your keywords, the results obtained will become increasingly precise in helping you find the information you need.
 
 How to Use
 
