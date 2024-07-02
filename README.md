@@ -15,6 +15,7 @@
 ## 使用方法
 
 1. 复制`code`文件中的代码到本地,保存为`app.py`
+
 2. 安装必要的Python包:
    pip install requests json os re urllib asyncio playwright logging beautifulsoup4 fake_useragent PyMuPDF openai flask flask_socketio random
 
